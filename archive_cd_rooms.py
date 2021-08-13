@@ -200,6 +200,7 @@ def is_room_countdown(region, room_match):
 
 def find_mkwx_rooms(room_manager, chosen_game_mode):
     r = requests.get(WIIMMFI_STATS_MKWX_URL)
+    found_room = False
     if r.status_code == 200:
         if r.text == "":
             return
@@ -214,11 +215,16 @@ def find_mkwx_rooms(room_manager, chosen_game_mode):
             if "Private" not in room_type.text:
                 if chosen_game_mode.mkwx_is_game_mode(room_type, room_tr):
                     room_manager.add_room_from_id_stats_type(room_tr["id"], mkwx_stats)
+                    found_room = True
     else:
         print(f"returned {r.status_code}: {r.reason}")
+        found_room = True
+
+    return found_room
 
 def find_mkw_rooms(room_manager, chosen_game_mode):
     r = requests.get(WIIMMFI_STATS_MKW_URL)
+    found_room = False
     if r.status_code == 200:
         if r.text == "":
             return
@@ -237,14 +243,19 @@ def find_mkw_rooms(room_manager, chosen_game_mode):
 
                 if chosen_game_mode.is_room_info_game_mode(region, room_match):
                     room_manager.add_room_from_id_stats_type(room_tr["id"], mkw_stats)
+                    found_room = True
     else:
         print(f"returned {r.status_code}: {r.reason}")
+        found_room = True
+
+    return found_room
 
 def main():
-    chosen_game_mode = CTWW_MODE
+    chosen_game_mode = COUNTDOWN_MODE
 
     WAITING_FOR_ROOMS = 0
     SEARCHING_FOR_ROOMS = 1
+    ARCHIVE_ROOMS = 2
 
     state = WAITING_FOR_ROOMS
     room_manager = RoomManager()
@@ -255,31 +266,51 @@ def main():
         try:
             if state == WAITING_FOR_ROOMS:
                 r = requests.get(CHADSOFT_STATUS_URL)
-                if r.status_code == 200 and r.text != "":
-                    response_text = r.text
-                    match_obj = chosen_game_mode.online_status_regex.search(response_text)
-                    if not match_obj:
-                        print("Warning: Could not find online status message.")
-                    else:
-                        online_status = match_obj.group(1)
-                        if not online_status.startswith(THERE_ARE_NO_ACTIVE):
-                            state = SEARCHING_FOR_ROOMS
-                            print("Rooms active, searching on wiimmfi")
-                            sleep_time = 0
+                if r.status_code == 200:
+                    if r.text != "":
+                        response_text = r.text
+                        match_obj = chosen_game_mode.online_status_regex.search(response_text)
+                        if not match_obj:
+                            print("Warning: Could not find online status message.")
                         else:
-                            now = datetime.datetime.now()
-                            print(f"No active rooms... ({now.hour}:{now.minute:02d})")
-                            sleep_time = 180
+                            online_status = match_obj.group(1)
+                            if not online_status.startswith(THERE_ARE_NO_ACTIVE):
+                                state = SEARCHING_FOR_ROOMS
+                                now = datetime.datetime.now()
+                                print(f"Rooms active, searching on wiimmfi ({now.hour}:{now.minute:02d})")
+                                sleep_time = 0
+                            else:
+                                now = datetime.datetime.now()
+                                print(f"No active rooms... ({now.hour}:{now.minute:02d})")
+                                sleep_time = 180
+                    else:
+                        print(f"Chadsoft status returned empty!")
+                        sleep_time = 30
+                else:
+                    print(f"chadsoft returned {r.status_code}: {r.reason}")
+                    sleep_time = 180
             elif state == SEARCHING_FOR_ROOMS:
-                print("Searching rooms on wiimmfi...")
-                find_mkw_rooms(room_manager, chosen_game_mode)
-                find_mkwx_rooms(room_manager, chosen_game_mode)
+                now = datetime.datetime.now()
+                print(f"Searching rooms on wiimmfi... ({now.hour}:{now.minute:02d})")
+                found_room = False
+                found_room = find_mkw_rooms(room_manager, chosen_game_mode) or found_room
+                found_room = find_mkwx_rooms(room_manager, chosen_game_mode) or found_room
                 if just_archive_rooms:
                     room_manager.archive_all_rooms()
                     return
+                elif not found_room:
+                    now = datetime.datetime.now()
+                    print(f"No rooms found on wiimmfi, archiving found rooms in 3 minutes! ({now.hour}:{now.minute:02d})")
+                    state = ARCHIVE_ROOMS
                 elif not room_manager.process_rooms():
                     state = WAITING_FOR_ROOMS
                 sleep_time = 180
+            elif state == ARCHIVE_ROOMS:
+                now = datetime.datetime.now()
+                print(f"Archiving found rooms ({now.hour}:{now.minute:02d})")
+                room_manager.archive_all_rooms()
+                state = WAITING_FOR_ROOMS
+                sleep_time = 0
 
             exception_sleep_time = 15
             time.sleep(sleep_time)
